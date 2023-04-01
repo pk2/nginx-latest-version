@@ -1,0 +1,118 @@
+---
+- name: Download nginx source
+  vars:
+    nginx_install_dir: '/root/{{ nginx_version }}'
+  hosts: web
+  become: yes
+  tasks:
+    - name: check latest version of Nginx
+      uri:
+        url: http://nginx.org/en/download.html
+        return_content: yes
+      register: nginx_download_page
+    - name: Extract latest version of Nginx
+      set_fact:
+        nginx_version: "nginx-{{ nginx_download_page.content | regex_findall('nginx-([0-9.]+)\\.tar\\.gz') | first }}"
+          
+    - name: Download nginx source
+      get_url:
+        url: 'https://nginx.org/download/{{ nginx_version }}.tar.gz'
+        dest: '/tmp/{{ nginx_version }}.tar.gz'
+      register: nginx_source
+
+    - name: Download nginx signature
+      get_url:
+        url: 'https://nginx.org/download/{{ nginx_version }}.tar.gz.asc'
+        dest: '/tmp/{{ nginx_version }}.tar.gz.asc'
+      when: nginx_source.changed
+
+    - name: Verify files
+      command: 'gpg2 -v --verify /tmp/{{ nginx_version }}.tar.gz.asc /tmp/{{ nginx_version }}.tar.gz'
+      when: nginx_source.changed
+
+    - name: Unarchive nginx
+      unarchive:
+        src: 'https://nginx.org/download/{{ nginx_version }}.tar.gz'
+        dest: /root
+        remote_src: yes
+      when: nginx_source.changed
+      register: nginx_source_unpack
+
+    - name: Create a symbolic link
+      file:
+        src: '/root/{{ nginx_version }}'
+        dest: /root/nginx
+        state: link
+      when: nginx_source_unpack.changed or nginx_source.changed
+
+    - name: Compiling nginx
+      command: '{{ item }} chdir={{ nginx_install_dir }}'
+      with_items:
+#        - ./configure --with-http_gzip_static_module --add-module=/root/njs/nginx --add-module=/root/nginx-rtmp-module
+        - ./configure 
+          --without-http_ssi_module 
+          --without-http_access_module 
+          --without-http_auth_basic_module 
+          --without-http_mirror_module 
+          --without-http_autoindex_module 
+          --without-http_geo_module 
+          --without-http_referer_module 
+          --without-http_proxy_module 
+          --without-http_fastcgi_module 
+          --without-http_uwsgi_module 
+          --without-http_scgi_module 
+          --without-http_grpc_module 
+          --without-http_memcached_module 
+          --without-http_limit_conn_module 
+          --without-http_limit_req_module 
+          --without-http_empty_gif_module 
+          --without-http_browser_module 
+          --without-http_upstream_hash_module 
+          --without-http_upstream_ip_hash_module 
+          --without-http_upstream_least_conn_module 
+          --without-http_upstream_random_module 
+          --without-http_upstream_keepalive_module 
+          --without-http_upstream_zone_module 
+          --without-stream_limit_conn_module 
+          --without-stream_access_module 
+          --without-stream_geo_module 
+          --without-stream_map_module 
+          --without-stream_split_clients_module 
+          --without-stream_return_module 
+          --without-stream_set_module 
+          --without-stream_upstream_hash_module 
+          --without-stream_upstream_least_conn_module 
+          --without-stream_upstream_random_module 
+          --without-stream_upstream_zone_module 
+          --with-http_gzip_static_module
+        - make
+        - make install 
+      when: nginx_source_unpack.changed or nginx_source.changed
+      register: nginx_compile
+
+    - name: Check template checksum
+      stat:
+        path: /root/nginx.conf.template
+        get_checksum: yes
+      register: nginx_template_file
+
+    - name: Check config checksum
+      stat:
+        path: /usr/local/nginx/conf/nginx.conf
+        get_checksum: yes
+      register: nginx_config_file
+
+    - name: Copy configuration file
+      copy:
+        src: /root/nginx.conf.template
+        dest: /usr/local/nginx/conf/nginx.conf
+      when: nginx_template_file.stat.checksum != nginx_config_file.stat.checksum
+      register: nginx_config
+
+    - name: Restarting nginx
+      command: '{{ item }} chdir={{ nginx_install_dir }}'
+      with_items:
+        - /usr/local/nginx/sbin/nginx -s stop
+        - /usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
+      when: nginx_config.changed or nginx_source.changed
+      register: nginx_source
